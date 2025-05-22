@@ -1,0 +1,18 @@
+ageGroup,ageStart,ageEnd
+From 0 to 4 years,0,4
+From 5 to 9 years,5,9
+From 10 to 14 years,10,14
+From 15 to 19 years,15,19
+From 20 to 24 years,20,24
+From 25 to 29 years,25,29
+From 30 to 34 years,30,34
+From 35 to 39 years,35,39
+From 40 to 44 years,40,44
+From 45 to 49 years,45,49
+From 50 to 54 years,50,54
+From 55 to 59 years,55,59
+From 60 to 64 years,60,64
+From 65 to 69 years,65,69
+From 70 to 74 years,70,74
+From 75 to 79 years,75,79
+From 80 years or more,80,NA
