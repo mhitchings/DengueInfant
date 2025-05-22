@@ -17,27 +17,11 @@ require(lme4)
 state_codes = read.table('./Data/01-processedData/mapping/state.txt')
 colnames(state_codes) = c("letter","number")
 
-den_cases = readRDS('./Data/02-analysisData/DengueLineList_Cases.rds')
-
 all_den = read.csv('./Data/02-analysisData/DengueCasesByStateYear_2000to2024_No1Day.csv')
 
 all_den = all_den %>% arrange(state,year_not)
 
 statenums = unique(all_den$state)
-
-mean6pluscaseage = den_cases %>% 
-  filter(!is.na(state) & age_years>=6 & year_not>=2000 & year_not<=2024) %>% 
-  group_by(year_not,state) %>% 
-  summarise(mean6pluscaseage = mean(age_years))
-sum1to5cases = den_cases %>% 
-  filter(!is.na(state) & age_years>=1 & age_years<=5 & year_not>=2000 & year_not<=2024) %>% 
-  group_by(year_not,state) %>% 
-  summarise(cases1to5=n())
-all_den = all_den %>% left_join(mean6pluscaseage,
-                                by=c('year_not','state'))
-all_den = all_den %>% left_join(sum1to5cases,
-                                by=c('year_not','state'))
-all_den$cases1to5[is.na(all_den$cases1to5)]=0
 
 all_den = all_den %>% mutate(agediff = mean6pluscaseage-meanpopage,
                              logir = log(ncase/pop*100000),

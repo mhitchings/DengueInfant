@@ -20,35 +20,14 @@ setwd("C:/Users/mhitchings/Dropbox (UFL)/DengueInfants")
 state_codes = read.table('./Data/01-processedData/mapping/state.txt')
 colnames(state_codes) = c("letter","number")
 
+# Note that this file is not made publicly available as it contains date of birth
 den_cases = readRDS('./Data/02-analysisData/DengueLineList_Cases.rds')
 
-all_den = read.csv('./Data/02-analysisData/DengueCasesByStateYear_2000to2024_No1Day.csv')
+all_den = read.csv('./Data/02-analysisData/DengueCasesByStateYear_2000to2024.csv')
 
 all_den = all_den %>% arrange(state,year_not)
 
 statenums = unique(all_den$state)
-
-ncaseunder18 = den_cases %>% 
-  filter(!is.na(state) & age_years<=18 & year_not>=2000 & year_not<=2024) %>% 
-  group_by(year_not,state) %>% 
-  summarise(ncaseunder18 = n())
-all_den = all_den %>% left_join(ncaseunder18,
-                                by=c('year_not','state'))
-
-nseverecaseunder18 = den_cases %>% 
-  filter(!is.na(state) & age_years<=18 & year_not>=2000 & year_not<=2024 & severe=="Severe") %>% 
-  group_by(year_not,state) %>% 
-  summarise(nseverecaseunder18 = n())
-all_den = all_den %>% left_join(nseverecaseunder18,
-                                by=c('year_not','state'))
-
-
-mean6pluscaseage = den_cases %>% 
-  filter(!is.na(state) & age_years>=6 & year_not>=2000 & year_not<=2024) %>% 
-  group_by(year_not,state) %>% 
-  summarise(mean6pluscaseage = mean(age_years))
-all_den = all_den %>% left_join(mean6pluscaseage,
-                                by=c('year_not','state'))
 
 all_den = all_den %>% mutate(agediff = meanage-meanpopage,
                              logir = log(ir),
@@ -160,34 +139,46 @@ all_den_byy = all_den_byy %>%
   mutate(ir = infantcases/infantpop,
          sevir = infantseverecases/infantpop)
 
+brazil_states = st_as_sf(readRDS('./Data/SpatialData/gadm/gadm41_BRA_1_pk.rds')) %>% 
+  mutate(letter = substr(HASC_1,4,5)) %>% 
+  left_join(state_codes,by='letter')
+brazil_regions = brazil_states %>% group_by(region_num) %>% summarise()
+brazil = brazil_regions %>% group_by() %>% summarise()
+
 # Figure 1 will be a line graph of incidence rate, line graph of case age, and histogram
 # An inset map will give the legend
 
 # Histogram of case age
+### NOTE: This figure will not be reproducible without the line list of cases
 
 ### Age distribution by region
-dailycountsbyregion = matrix(NA,nrow=5,ncol=48)
-dailysevcountsbyregion = matrix(NA,nrow=5,ncol=48)
-
-regions = c("North","Northeast","Central-West","Southeast","South")
-
-for (row in 1:5) {
+if (exists('den_cases')) {
+  dailycountsbyregion = matrix(NA,nrow=5,ncol=48)
+  dailysevcountsbyregion = matrix(NA,nrow=5,ncol=48)
   
-  x=hist((den_cases %>% filter(!is.na(state) & age_years<1 & age_months<12 & region==regions[row]))$age_days,
-         breaks=c(seq(1,29,7),seq(59,360,30)))
-  counts = x$counts
-  dailycounts = c(counts[1:4],
-                  rep(counts[5:length(counts)]/4,each=4)
-  )
-  dailycountsbyregion[row,] = dailycounts
+  regions = c("North","Northeast","Central-West","Southeast","South")
   
-  x=hist((den_cases %>% filter(!is.na(state) & age_years<1 & age_months<12 & region==regions[row] & severe=="Severe"))$age_days,
-         breaks=c(seq(1,29,7),seq(59,360,30)))
-  counts = x$counts
-  dailysevcounts = c(counts[1:4],
-                     rep(counts[5:length(counts)]/4,each=4)
-  )
-  dailysevcountsbyregion[row,]=dailysevcounts
+  for (row in 1:5) {
+    
+    x=hist((den_cases %>% filter(!is.na(state) & age_years<1 & age_months<12 & region==regions[row]))$age_days,
+           breaks=c(seq(1,29,7),seq(59,360,30)))
+    counts = x$counts
+    dailycounts = c(counts[1:4],
+                    rep(counts[5:length(counts)]/4,each=4)
+    )
+    dailycountsbyregion[row,] = dailycounts
+    
+    x=hist((den_cases %>% filter(!is.na(state) & age_years<1 & age_months<12 & region==regions[row] & severe=="Severe"))$age_days,
+           breaks=c(seq(1,29,7),seq(59,360,30)))
+    counts = x$counts
+    dailysevcounts = c(counts[1:4],
+                       rep(counts[5:length(counts)]/4,each=4)
+    )
+    dailysevcountsbyregion[row,]=dailysevcounts
+  }
+} else {
+  dailycountsbyregion = read.csv('./Data/02-analysisData/DailyCountsByRegion_ForFig1.csv')
+  dailysevcountsbyregion = read.csv('./Data/02-analysisData/DailySevCountsByRegion_ForFig1.csv')
 }
 df_forplot = data.frame('Age'=rep(seq(1,52,length.out=48),2*5),
                         'Region'=rep(rep(regions,each=48),2),
@@ -243,7 +234,7 @@ figure1_a_with_inset =
 ### Figure 1B is empirical age distribution of all cases and severe cases in Brazil,
 ### aggregated over all states and over 2000-2024, as well as the age distribution
 ### of severe cases from O'Driscoll et al (Thailand)
-thailand_sevcases = read.csv('~/UF/Research/DengueInfants/Manuscripts/InfantCases.csv')
+thailand_sevcases = read.csv('./Data/ThailandInfantCases.csv')
 thailand_sevcases$dens = thailand_sevcases$cases/sum(thailand_sevcases$cases)
 thailand_sevcases$age_months = thailand_sevcases$age_months * 30.75
 thailand_sevcases$label='Severe Cases'
@@ -253,14 +244,19 @@ df_forplot_thailand = data.frame('Age'=seq(1,52,length.out=52),
                                  'label'=rep('Severe Cases',52))
 
 ## Add in the number of cases in 1-year-olds as a separate point
-ncase_1to2 = den_cases %>% 
-  filter(!is.na(state) & age_years==1) %>% count()
-nsevcase_1to2 = den_cases %>% 
-  filter(!is.na(state) & severe=="Severe" & age_years==1) %>% count()
+if (exists('den_cases')) {
+  ncase_1to2 = (den_cases %>% 
+    filter(!is.na(state) & age_years==1) %>% count())$n
+  nsevcase_1to2 = (den_cases %>% 
+    filter(!is.na(state) & severe=="Severe" & age_years==1) %>% count())$n
+} else {
+  ncase_1to2 = 145539
+  nsevcase_1to2 = 1175
+}
 
 df_forplot_brazil = data.frame('Age'=rep(c(seq(1,52,length.out=48),65),2),
-                               'Counts'=c(colSums(dailycountsbyregion),ncase_1to2$n/52,
-                                          colSums(dailysevcountsbyregion),nsevcase_1to2$n/52),
+                               'Counts'=c(colSums(dailycountsbyregion),ncase_1to2/52,
+                                          colSums(dailysevcountsbyregion),nsevcase_1to2/52),
                                'Type'=c(rep('All Cases',length(dailycounts)+1),
                                         rep('Severe Cases',length(dailycounts)+1))
 )
@@ -338,11 +334,7 @@ figure1_c <- ggplot() +
         legend.title = element_text(size=textsize),
         strip.text = element_text(size=textsize,hjust=0))
 
-ggsave('~/UF/Research/DengueInfants/Manuscripts/Figure1_Landscape_0507.png',
-       grid.arrange(figure1_a_with_inset,figure1_b,figure1_c,ncol=3),
-       height=4,width=7.5,units='in',device='png')
-
-
+grid.arrange(figure1_a_with_inset,figure1_b,figure1_c,ncol=3)
 
 ######################################################################################
 ######################################################################################
@@ -362,43 +354,6 @@ ggsave('~/UF/Research/DengueInfants/Manuscripts/FigureS1_0512.png',
          scale_x_continuous(name='Year',breaks=seq(2000,2025,5),labels=c('00','05','10','15','20','25')),
        height=6,width=8,units='in',device='png')
 
-# Fit exponential growth in IR to each state
-df = data.frame('State'=unique(all_den$statecode),
-                'Slope'=rep(NA,27),
-                'p'=rep(NA,27),
-                'R2'=rep(NA,27))
-row = 1
-for (sc in unique(all_den$statecode)) {
-  m_exp_growth = lm(loginfantir ~ year_not,data=all_den %>% filter(statecode==sc & loginfantir>-Inf))
-  df$Slope[row] = exp(coef(m_exp_growth)[2])
-  df$p[row] = summary(m_exp_growth)$coef[2,4]
-  df$R2[row] = summary(m_exp_growth)$r.squared
-  row = row+1
-  
-}
-
-df %>% left_join(state_codes %>% dplyr::select(letter,staterank,region_num,region) %>% dplyr::rename(State=letter),by='State') %>%
-  arrange(Slope)
-
-brazil_states = st_as_sf(readRDS('./Data/SpatialData/gadm/gadm41_BRA_1_pk.rds')) %>% 
-  mutate(letter = substr(HASC_1,4,5)) %>% 
-  left_join(state_codes,by='letter')
-brazil_regions = brazil_states %>% group_by(region_num) %>% summarise()
-brazil = brazil_regions %>% group_by() %>% summarise()
-
-## Plot of exponential growth by state
-figs2 = ggplot() + 
-  geom_sf(data = brazil_states %>% rename(State=letter) %>% left_join(df,by='State'),aes(fill=Slope)) + 
-  scale_fill_continuous(name='Annual fold increase') + 
-  theme(axis.line = element_blank(),
-        axis.text = element_blank(),
-        axis.ticks = element_blank(),
-        legend.title = element_text(size=6),
-        legend.text = element_text(size=6))
-
-ggsave('~/UF/Research/DengueInfants/Manuscripts/FigureS2_ExpGrowth.png',
-       figs2,
-       height=4,width=4,units='in',device='png')
 
 # Proportion of cases and severe cases that are in infants by region and time
 all_den_byregion = all_den %>% group_by(year_not,region_num) %>%
@@ -449,10 +404,6 @@ figure_propsev =
         legend.title = element_text(size=textsize),
         strip.text = element_text(size=textsize,hjust=0))
 
-ggsave('~/UF/Research/DengueInfants/Manuscripts/FigureS3_PropChildCases_0512.png',
-       figure_propsev,
-       height=4,width=6.6,units='in',device='png')
-
 
 #### Supplementary figure of age distribution when we have date of birth
 ### Age distribution by region
@@ -502,85 +453,77 @@ ggsave('~/UF/Research/DengueInfants/Manuscripts/FigureS4_AgeDistribution_WithDOB
        height=4,width=2.5,units='in',device='png')
 
 # Figure S5-9: Age distribution of severe cases by state and 5-year period in SE, NE, and CW
-ggsave('~/UF/Research/DengueInfants/Manuscripts/Figure_S5_0512.png',
-       den_cases  %>% 
-         filter(!is.na(state) & age_years<1 & age_months<12 & severe=="Severe" & region=="North") %>% 
-         mutate(y5 = floor(year_not/5),
-                y5_label = case_when(y5 == 400 ~ "2000-2004",
-                                     y5 == 401 ~ "2005-2009",
-                                     y5 == 402 ~ "2010-2014",
-                                     y5 == 403 ~ "2015-2019",
-                                     y5 == 404 ~ "2020-2024"
-                ),
-                region = factor(region,levels = rev(unique(state_codes$region)))) %>% 
-         ggplot(aes(x=age_months)) + geom_histogram(breaks=(-1):12) + 
-         facet_grid(statecode~y5_label) + 
-         xlab("Age (months)") + ylab("Case count"),
-       height=8,width=6,units='in',device='png')
-
-ggsave('~/UF/Research/DengueInfants/Manuscripts/Figure_S6_0512.png',
-       den_cases  %>% 
-         filter(!is.na(state) & age_years<1 & age_months<12 & severe=="Severe" & region=="Northeast") %>% 
-         mutate(y5 = floor(year_not/5),
-                y5_label = case_when(y5 == 400 ~ "2000-2004",
-                                     y5 == 401 ~ "2005-2009",
-                                     y5 == 402 ~ "2010-2014",
-                                     y5 == 403 ~ "2015-2019",
-                                     y5 == 404 ~ "2020-2024"
-                ),
-                region = factor(region,levels = rev(unique(state_codes$region)))) %>% 
-         ggplot(aes(x=age_months)) + geom_histogram(breaks=(-1):12) + 
-         facet_grid(statecode~y5_label) + 
-         xlab("Age (months)") + ylab("Case count"),
-       height=8,width=6,units='in',device='png')
-
-ggsave('~/UF/Research/DengueInfants/Manuscripts/Figure_S7_0512.png',
-       den_cases  %>% 
-         filter(!is.na(state) & age_years<1 & age_months<12 & severe=="Severe" & region=="Central-West") %>% 
-         mutate(y5 = floor(year_not/5),
-                y5_label = case_when(y5 == 400 ~ "2000-2004",
-                                     y5 == 401 ~ "2005-2009",
-                                     y5 == 402 ~ "2010-2014",
-                                     y5 == 403 ~ "2015-2019",
-                                     y5 == 404 ~ "2020-2024"
-                ),
-                region = factor(region,levels = rev(unique(state_codes$region)))) %>% 
-         ggplot(aes(x=age_months)) + geom_histogram(breaks=(-1):12) + 
-         facet_grid(statecode~y5_label) + 
-         xlab("Age (months)") + ylab("Case count"),
-       height=8,width=6,units='in',device='png')
-
-ggsave('~/UF/Research/DengueInfants/Manuscripts/Figure_S8_0512.png',
-       den_cases  %>% 
-         filter(!is.na(state) & age_years<1 & age_months<12 & severe=="Severe" & region=="Southeast") %>% 
-         mutate(y5 = floor(year_not/5),
-                y5_label = case_when(y5 == 400 ~ "2000-2004",
-                                     y5 == 401 ~ "2005-2009",
-                                     y5 == 402 ~ "2010-2014",
-                                     y5 == 403 ~ "2015-2019",
-                                     y5 == 404 ~ "2020-2024"
-                ),
-                region = factor(region,levels = rev(unique(state_codes$region)))) %>% 
-         ggplot(aes(x=age_months)) + geom_histogram(breaks=(-1):12) + 
-         facet_grid(statecode~y5_label) + 
-         xlab("Age (months)") + ylab("Case count"),
-       height=8,width=6,units='in',device='png')
-
-ggsave('~/UF/Research/DengueInfants/Manuscripts/Figure_S9_0512.png',
-       den_cases  %>% 
-         filter(!is.na(state) & age_years<1 & age_months<12 & severe=="Severe" & region=="South") %>% 
-         mutate(y5 = floor(year_not/5),
-                y5_label = case_when(y5 == 400 ~ "2000-2004",
-                                     y5 == 401 ~ "2005-2009",
-                                     y5 == 402 ~ "2010-2014",
-                                     y5 == 403 ~ "2015-2019",
-                                     y5 == 404 ~ "2020-2024"
-                ),
-                region = factor(region,levels = rev(unique(state_codes$region)))) %>% 
-         ggplot(aes(x=age_months)) + geom_histogram(breaks=(-1):12) + 
-         facet_grid(statecode~y5_label) + 
-         xlab("Age (months)") + ylab("Case count"),
-       height=8,width=6,units='in',device='png')
+if (exists('den_cases')) {
+  den_cases  %>% 
+           filter(!is.na(state) & age_years<1 & age_months<12 & severe=="Severe" & region=="North") %>% 
+           mutate(y5 = floor(year_not/5),
+                  y5_label = case_when(y5 == 400 ~ "2000-2004",
+                                       y5 == 401 ~ "2005-2009",
+                                       y5 == 402 ~ "2010-2014",
+                                       y5 == 403 ~ "2015-2019",
+                                       y5 == 404 ~ "2020-2024"
+                  ),
+                  region = factor(region,levels = rev(unique(state_codes$region)))) %>% 
+           ggplot(aes(x=age_months)) + geom_histogram(breaks=(-1):12) + 
+           facet_grid(statecode~y5_label) + 
+           xlab("Age (months)") + ylab("Case count")
+  
+  den_cases  %>% 
+           filter(!is.na(state) & age_years<1 & age_months<12 & severe=="Severe" & region=="Northeast") %>% 
+           mutate(y5 = floor(year_not/5),
+                  y5_label = case_when(y5 == 400 ~ "2000-2004",
+                                       y5 == 401 ~ "2005-2009",
+                                       y5 == 402 ~ "2010-2014",
+                                       y5 == 403 ~ "2015-2019",
+                                       y5 == 404 ~ "2020-2024"
+                  ),
+                  region = factor(region,levels = rev(unique(state_codes$region)))) %>% 
+           ggplot(aes(x=age_months)) + geom_histogram(breaks=(-1):12) + 
+           facet_grid(statecode~y5_label) + 
+           xlab("Age (months)") + ylab("Case count")
+  
+  den_cases  %>% 
+           filter(!is.na(state) & age_years<1 & age_months<12 & severe=="Severe" & region=="Central-West") %>% 
+           mutate(y5 = floor(year_not/5),
+                  y5_label = case_when(y5 == 400 ~ "2000-2004",
+                                       y5 == 401 ~ "2005-2009",
+                                       y5 == 402 ~ "2010-2014",
+                                       y5 == 403 ~ "2015-2019",
+                                       y5 == 404 ~ "2020-2024"
+                  ),
+                  region = factor(region,levels = rev(unique(state_codes$region)))) %>% 
+           ggplot(aes(x=age_months)) + geom_histogram(breaks=(-1):12) + 
+           facet_grid(statecode~y5_label) + 
+           xlab("Age (months)") + ylab("Case count")
+  
+  den_cases  %>% 
+           filter(!is.na(state) & age_years<1 & age_months<12 & severe=="Severe" & region=="Southeast") %>% 
+           mutate(y5 = floor(year_not/5),
+                  y5_label = case_when(y5 == 400 ~ "2000-2004",
+                                       y5 == 401 ~ "2005-2009",
+                                       y5 == 402 ~ "2010-2014",
+                                       y5 == 403 ~ "2015-2019",
+                                       y5 == 404 ~ "2020-2024"
+                  ),
+                  region = factor(region,levels = rev(unique(state_codes$region)))) %>% 
+           ggplot(aes(x=age_months)) + geom_histogram(breaks=(-1):12) + 
+           facet_grid(statecode~y5_label) + 
+           xlab("Age (months)") + ylab("Case count")
+  
+  den_cases  %>% 
+           filter(!is.na(state) & age_years<1 & age_months<12 & severe=="Severe" & region=="South") %>% 
+           mutate(y5 = floor(year_not/5),
+                  y5_label = case_when(y5 == 400 ~ "2000-2004",
+                                       y5 == 401 ~ "2005-2009",
+                                       y5 == 402 ~ "2010-2014",
+                                       y5 == 403 ~ "2015-2019",
+                                       y5 == 404 ~ "2020-2024"
+                  ),
+                  region = factor(region,levels = rev(unique(state_codes$region)))) %>% 
+           ggplot(aes(x=age_months)) + geom_histogram(breaks=(-1):12) + 
+           facet_grid(statecode~y5_label) + 
+           xlab("Age (months)") + ylab("Case count")
+}
 
 
 ## Heat map of maternal seroprevalence
@@ -593,117 +536,37 @@ maternal_sp_dat = array(NA,dim=c(2014-2000+1,length(statenums),3),dimnames=list(
 foi_dat = array(NA,dim=c(2014-2000+1,length(statenums)),dimnames=list(2000:2014,
                                                                       statenums))
 
-maternal_prev_dat = array(0,dim=c(2014-2000+1,length(statenums),3),dimnames=list(2000:2014,
-                                                                                 statenums,
-                                                                                 c("MP_SN","MP_S1","MP_Smult")))
-
-
-if (foi_dir=='./Data/02-foi/stanfit_diff_reduced/11_rta_init_long/state/all/') {
+for (s in statenums) {
   
-  for (s in statenums) {
+  if (file.exists(paste0(foi_dir,'S_mother/',s,'.csv'))) {
     
-    if (file.exists(paste0(foi_dir,s,'/S_infantAb.csv'))) {
-      
-      t = read.csv(paste0(foi_dir,s,'/S_infantAb.csv'))
-      
-      
-      t = t %>% filter(year>=1999) %>% mutate(Smult = S2+S3+S4,
-                                              SP = Smult+S1) %>%
-        group_by(year) %>% summarise(Smult=median(Smult),SP=median(SP),
-                                     S1=median(S1),S1_I = median(S1_I),
-                                     S2=median(S2),S2_I = median(S2_I),
-                                     S3=median(S3),S3_I=median(S3_I),
-                                     S4=median(S4),S4_I=median(S4_I))
-      t = t %>% mutate(MP_SN = S1_I * S1,
-                       MP_S1 = S2_I * S2,
-                       MP_Smult = S3_I * S3 + S4_I * S4)
-      
-      maternal_prev_dat[,dimnames(maternal_sp_dat)[[2]]==s,c("MP_SN")] = (head(t$MP_SN,-1)+tail(t$MP_SN,-1))/2
-      maternal_prev_dat[,dimnames(maternal_sp_dat)[[2]]==s,c("MP_S1")] = (head(t$MP_S1,-1)+tail(t$MP_S1,-1))/2
-      maternal_prev_dat[,dimnames(maternal_sp_dat)[[2]]==s,c("MP_Smult")] = (head(t$MP_Smult,-1)+tail(t$MP_Smult,-1))/2
-      
-      maternal_sp_dat[,dimnames(maternal_sp_dat)[[2]]==s,c("SP")] = (head(t$SP,-1)+tail(t$SP,-1))/2
-      maternal_sp_dat[,dimnames(maternal_sp_dat)[[2]]==s,c("Smult")] = (head(t$Smult,-1)+tail(t$Smult,-1))/2
-      maternal_sp_dat[,dimnames(maternal_sp_dat)[[2]]==s,c("S1")] = (head(t$S1,-1)+tail(t$S1,-1))/2
-      
+    t = read.csv(paste0(foi_dir,'S_mother/',s,'.csv'))
+    
+    t = t %>% filter(year>=2000 & year<=2014) %>% mutate(SP = Smult+S1) %>%
+      group_by(year) %>% summarise(Smult=median(Smult),SP=median(SP),S1=median(S1))
+    
+    if (s == 43 & foi_dir == "./Data/02-foi/stanfit_v3/31_rta_async_sevShift_long/") {
+      t = t %>% bind_rows(data.frame('year'=2013:2014,
+                                     'Smult'=rep(t$Smult[13],2),
+                                     'SP'=rep(t$SP[13],2),
+                                     'S1'=rep(t$S1[13],2)
+      )
+      )
     }
     
-    if (file.exists(paste0(foi_dir,s,'/hazard_infant.csv'))) {
-      
-      t = read.csv(paste0(foi_dir,s,'/hazard_infant.csv'))
-      t = t %>% filter(year>=2000) %>%
-        group_by(year) %>% summarise(FOI = median(hazard))
-      
-      foi_dat[,dimnames(foi_dat)[[2]]==s] = t$FOI
-      
-    }
+    maternal_sp_dat[,dimnames(maternal_sp_dat)[[2]]==s,c("SP")] = t$SP
+    maternal_sp_dat[,dimnames(maternal_sp_dat)[[2]]==s,c("Smult")] = t$Smult
+    maternal_sp_dat[,dimnames(maternal_sp_dat)[[2]]==s,c("S1")] = t$S1
     
   }
   
-} else if (grepl('stanfit_v3',foi_dir)) {
-  
-  for (s in statenums) {
+  if (file.exists(paste0(foi_dir,'lambda_t/',s,'.csv'))) {
     
-    if (file.exists(paste0(foi_dir,'S_mother/',s,'.csv'))) {
-      
-      t = read.csv(paste0(foi_dir,'S_mother/',s,'.csv'))
-      
-      t = t %>% filter(year>=2000 & year<=2014) %>% mutate(SP = Smult+S1) %>%
-        group_by(year) %>% summarise(Smult=median(Smult),SP=median(SP),S1=median(S1))
-      
-      if (s == 43 & foi_dir == "./Data/02-foi/stanfit_v3/31_rta_async_sevShift_long/") {
-        t = t %>% bind_rows(data.frame('year'=2013:2014,
-                                       'Smult'=rep(t$Smult[13],2),
-                                       'SP'=rep(t$SP[13],2),
-                                       'S1'=rep(t$S1[13],2)
-        )
-        )
-      }
-      
-      maternal_sp_dat[,dimnames(maternal_sp_dat)[[2]]==s,c("SP")] = t$SP
-      maternal_sp_dat[,dimnames(maternal_sp_dat)[[2]]==s,c("Smult")] = t$Smult
-      maternal_sp_dat[,dimnames(maternal_sp_dat)[[2]]==s,c("S1")] = t$S1
-      
-    }
+    t = read.csv(paste0(foi_dir,'lambda_t/',s,'.csv'))
+    t = t %>% filter(year>=2000 & year<=2014) %>%
+      group_by(year) %>% summarise(FOI = mean(val))
     
-    if (file.exists(paste0(foi_dir,'lambda_t/',s,'.csv'))) {
-      
-      t = read.csv(paste0(foi_dir,'lambda_t/',s,'.csv'))
-      t = t %>% filter(year>=2000 & year<=2014) %>%
-        group_by(year) %>% summarise(FOI = mean(val))
-      
-      foi_dat[,dimnames(foi_dat)[[2]]==s] = t$FOI
-      
-    }
-    
-  }
-  
-} else {
-  
-  for (s in statenums) {
-    
-    if (file.exists(paste0(foi_dir,'S_infantAb/',s,'.csv'))) {
-      
-      t = read.csv(paste0(foi_dir,'S_infantAb/',s,'.csv'))
-      
-      t = t %>% filter(year>=2000 & year<=2014) %>% mutate(SP = Smult+S1) %>%
-        group_by(year) %>% summarise(Smult=median(Smult),SP=median(SP),S1=median(S1))
-      
-      maternal_sp_dat[,dimnames(maternal_sp_dat)[[2]]==s,c("SP")] = t$SP
-      maternal_sp_dat[,dimnames(maternal_sp_dat)[[2]]==s,c("Smult")] = t$Smult
-      maternal_sp_dat[,dimnames(maternal_sp_dat)[[2]]==s,c("S1")] = t$S1
-      
-    }
-    
-    if (file.exists(paste0(foi_dir,'hazard_infant/',s,'.csv'))) {
-      
-      t = read.csv(paste0(foi_dir,'hazard_infant/',s,'.csv'))
-      t = t %>% filter(year>=2000 & year<=2014) %>%
-        group_by(year) %>% summarise(FOI = median(hazard))
-      
-      foi_dat[,dimnames(foi_dat)[[2]]==s] = t$FOI
-      
-    }
+    foi_dat[,dimnames(foi_dat)[[2]]==s] = t$FOI
     
   }
   
@@ -722,37 +585,25 @@ all_den$maternal_smult = sapply(1:nrow(all_den),function(x) (maternal_sp_dat[dim
 all_den$foi = sapply(1:nrow(all_den),function(x) (foi_dat[dimnames(foi_dat)[[1]]==all_den$year_not[x],
                                                           dimnames(foi_dat)[[2]]==all_den$state[x]]))
 
-all_den$maternal_prev_sn = sapply(1:nrow(all_den),function(x) (maternal_prev_dat[dimnames(maternal_prev_dat)[[1]]==all_den$year_not[x],
-                                                                                 dimnames(maternal_prev_dat)[[2]]==all_den$state[x],
-                                                                                 c("MP_SN")]))
-all_den$maternal_prev_s1 = sapply(1:nrow(all_den),function(x) (maternal_prev_dat[dimnames(maternal_prev_dat)[[1]]==all_den$year_not[x],
-                                                                                 dimnames(maternal_prev_dat)[[2]]==all_den$state[x],
-                                                                                 c("MP_S1")]))
-all_den$maternal_prev_smult = sapply(1:nrow(all_den),function(x) (maternal_prev_dat[dimnames(maternal_prev_dat)[[1]]==all_den$year_not[x],
-                                                                                    dimnames(maternal_prev_dat)[[2]]==all_den$state[x],
-                                                                                    c("MP_Smult")]))
-
 lastyear=2014
-ggsave('~/UF/Research/DengueInfants/Manuscripts/HeatMap_MaternalSeroprevalence.png',
-       all_den %>% ggplot() + 
-         geom_tile(aes(x=year_not,y=staterank,fill=maternal_sp)) + 
-         geom_hline(yintercept = 3.5)+
-         geom_hline(yintercept = 7.5)+
-         geom_hline(yintercept = 11.5)+
-         geom_hline(yintercept = 20.5)+
-         annotate(geom="text",x=lastyear+1,y=2,label="South",angle=270)+
-         annotate(geom="text",x=lastyear+1,y=5.5,label="Southeast",angle=270)+
-         annotate(geom="text",x=lastyear+1,y=9.5,label="Central-West",angle=270)+
-         annotate(geom="text",x=lastyear+1,y=16,label="Northeast",angle=270)+
-         annotate(geom="text",x=lastyear+1,y=24,label="North",angle=270)+
-         scale_y_continuous(name='State',
-                            labels=state_codes$letter,
-                            breaks=state_codes$staterank) + 
-         scale_x_continuous(name='Year',
-                            labels=seq(2000,lastyear,by=5),
-                            breaks=seq(2000,lastyear,by=5)) + 
-         scale_fill_gradient(name='Maternal seroprevalence',
-                             low="white", high="blue") + 
-         theme(legend.position = 'bottom'),
-       device='png',height=8,width=6,units='in')
+all_den %>% ggplot() + 
+  geom_tile(aes(x=year_not,y=staterank,fill=maternal_sp)) + 
+  geom_hline(yintercept = 3.5)+
+  geom_hline(yintercept = 7.5)+
+  geom_hline(yintercept = 11.5)+
+  geom_hline(yintercept = 20.5)+
+  annotate(geom="text",x=lastyear+1,y=2,label="South",angle=270)+
+  annotate(geom="text",x=lastyear+1,y=5.5,label="Southeast",angle=270)+
+  annotate(geom="text",x=lastyear+1,y=9.5,label="Central-West",angle=270)+
+  annotate(geom="text",x=lastyear+1,y=16,label="Northeast",angle=270)+
+  annotate(geom="text",x=lastyear+1,y=24,label="North",angle=270)+
+  scale_y_continuous(name='State',
+                    labels=state_codes$letter,
+                    breaks=state_codes$staterank) + 
+  scale_x_continuous(name='Year',
+                    labels=seq(2000,lastyear,by=5),
+                    breaks=seq(2000,lastyear,by=5)) + 
+  scale_fill_gradient(name='Maternal seroprevalence',
+                     low="white", high="blue") + 
+  theme(legend.position = 'bottom')
 
