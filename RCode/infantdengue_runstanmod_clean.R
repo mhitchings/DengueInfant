@@ -10,13 +10,12 @@ if (length(args)==0) {
   include_agereporting=0 # Difference in reporting odds by age
   include_maternalprotection=1 # Difference in infection hazard between infants born to seropositive and seronegative mothers?
   alphaconst=0 # Reporting odds constant over time
-  alphalin=1 # Reporting odds log-linear with calendar year?
-  filesuffix_extra='_modeloption'
-  foi_dir = './Data/02-foi/stanfit_v3/31_rta_async_sevShift_long/'
-  foi_type = '31_rta_async_sevShift_long'
+  alphalin=0 # Reporting odds log-linear with calendar year?
+  filesuffix_extra=''
+  foi_dir = './Data/02-foi/stanfit_v3/t51_rta_async_noType_neglectZika_final/'
+  foi_type = 't51_rta_async_noType_neglectZika_final'
   numiter=1500
-  lambda_uncertainty = 1 # Incorporate uncertainty in FOI and maternal seroprevalence?
-  ade_dist = 0 # Log-normal or normal distribution of ADE odds ratio with age
+  lambda_uncertainty = 0 # Incorporate uncertainty in FOI and maternal seroprevalence?
   
 } else {
   for (iarg in 1:length(args)) { 
@@ -53,15 +52,6 @@ for (s in statenums) {
     t = t %>% filter(year>=2000 & year<=2014) %>% mutate(SP = Smult+S1) %>%
       group_by(year) %>% dplyr::summarise(Smult=mean(Smult),SP=mean(SP),S1=mean(S1))
     
-    if (s == 43 & foi_dir == "./Data/02-foi/stanfit_v3/31_rta_async_sevShift_long/") {
-      t = t %>% bind_rows(data.frame('year'=2013:2014,
-                                     'Smult'=rep(t$Smult[13],2),
-                                     'SP'=rep(t$SP[13],2),
-                                     'S1'=rep(t$S1[13],2)
-                                     )
-      )
-    }
-    
     maternal_sp_dat[,dimnames(maternal_sp_dat)[[2]]==s,c("SP")] = t$SP
     maternal_sp_dat[,dimnames(maternal_sp_dat)[[2]]==s,c("Smult")] = t$Smult
     maternal_sp_dat[,dimnames(maternal_sp_dat)[[2]]==s,c("S1")] = t$S1
@@ -72,7 +62,7 @@ for (s in statenums) {
     
     t = read.csv(paste0(foi_dir,'lambda_t/',s,'.csv'))
     t = t %>% filter(year>=2000 & year<=2014) %>%
-      group_by(year) %>% summarise(FOI = mean(val))
+      group_by(year) %>% dplyr::summarise(FOI = mean(val))
     
     foi_dat[,dimnames(foi_dat)[[2]]==s] = t$FOI
     
@@ -94,27 +84,25 @@ all_den$foi = sapply(1:nrow(all_den),function(x) (foi_dat[dimnames(foi_dat)[[1]]
 
 # Parameters to output
 namepars = c("mat_protection_decay",
-             "baseline_hazmatprot_sp",
              "baseline_hazmatprot_sn",
-             "baseline_hazinfmult",
-             "ageinfection_decay",
+             "baseline_hazmatprot_sp",
+             "baseline_hazmult_sn",
+             "baseline_hazmult_sp",
              "baseline_replogor",
-             "agereporting_decay",
              "oneyear_probsev",
              "baseline_sevlogor",
-             "ageseverity_decay",
-             "titersev_mult",
-             "titersev_meanlog",
-             "titersev_sdlog")
+             "adepeak_logor",
+             "ademode",
+             "adekappa")
 
 if (lambda_uncertainty==1) {
 
-  model_code = stanc(file="./fit_infantdengue_lambdauncertainty_modeloption_clean.stan")
+  model_code = stanc(file="./RCode/fit_infantdengue_lambdauncertainty_modeloption_clean.stan")
   pars_to_output = c(namepars,'alphast_param','lambda_st','msp_st')
   
 } else {
   
-  model_code = stanc(file="./fit_infantdengue_nolambdauncertainty_modeloption_clean.stan")
+  model_code = stanc(file="./RCode/fit_infantdengue_nolambdauncertainty_modeloption_clean.stan")
   pars_to_output = c(namepars,'alphast_param')
   
 }
@@ -124,7 +112,7 @@ options(mc.cores = 4) # checks number of cores without having later to specify t
 rstan_options(auto_write = TRUE) # extended packages to use stan
 
 runmodel = function(include_ade,include_sevagefrailty,include_infagefrailty,include_agereporting,include_maternalprotection,
-                    ade_dist,lambda_uncertainty,
+                    lambda_uncertainty,
                     alphaconst,alphalin,numiter,filesuffix_extra) {
   
   filesuffix = paste0('_ade_',include_ade,
@@ -136,7 +124,6 @@ runmodel = function(include_ade,include_sevagefrailty,include_infagefrailty,incl
                       '_alphalin_',alphalin,
                       '_foitype_',foi_type,
                       '_lambdauncertainty_',lambda_uncertainty,
-                      '_adedist_',c('LN','N')[ade_dist+1],
                       filesuffix_extra)
   
   if (lambda_uncertainty==1) {
@@ -166,8 +153,7 @@ runmodel = function(include_ade,include_sevagefrailty,include_infagefrailty,incl
       include_sevagefrailty = include_sevagefrailty,
       include_infagefrailty = include_infagefrailty,
       include_agereporting = include_agereporting,
-      include_maternalprotection = include_maternalprotection,
-      ade_dist=ade_dist
+      include_maternalprotection = include_maternalprotection
     )
   } else {
     data_input = list(
@@ -187,8 +173,7 @@ runmodel = function(include_ade,include_sevagefrailty,include_infagefrailty,incl
       include_sevagefrailty = include_sevagefrailty,
       include_infagefrailty = include_infagefrailty,
       include_agereporting = include_agereporting,
-      include_maternalprotection = include_maternalprotection,
-      ade_dist=ade_dist
+      include_maternalprotection = include_maternalprotection
     )
   }
   
@@ -212,11 +197,10 @@ runmodel = function(include_ade,include_sevagefrailty,include_infagefrailty,incl
     )
     infant_model@stanmodel@dso <- new("cxxdso")
     saveRDS(infant_model,paste0('./infantmodel',filesuffix,'.rds'))
-    write.csv(as.data.frame(as.matrix(infant_model)),paste0('/orange/cummings/mhitchings/DengueInfant/infantmodelposterior',filesuffix,'.csv'),row.names=F)
   }
   
 }
 
 runmodel(include_ade,include_sevagefrailty,include_infagefrailty,include_agereporting,include_maternalprotection,
-         ade_dist,lambda_uncertainty,
+         lambda_uncertainty,
          alphaconst,alphalin,numiter,filesuffix_extra)

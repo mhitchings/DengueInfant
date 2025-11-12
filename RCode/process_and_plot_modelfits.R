@@ -10,10 +10,20 @@ require(ggplot2); theme_set(theme_classic())
 include_maternalprotection=1
 alphaconst=0
 alphalin=0
-foi_dir = './Data/02-foi/stanfit_v3/31_rta_async_sevShift_long/'
-foi_type='31_rta_async_sevShift_long'
+foi_dir = './Data/02-foi/stanfit_v3/t51_rta_async_noType_neglectZika_final/'
+foi_type='t51_rta_final'
 filesuffix_extra=''
 lambda_uncertainty = 0
+
+# Function to describe rise and fall in severe disease odds in children of seropositive mothers
+ade_func = function(y,mode,kappa,mult,a,c) {
+  
+  res = rep(0,length(y))
+  
+  res[y>=a & y<=c] = mult * ((y[y>=a & y<=c] - a) / (mode * (c - a))) ^ (mode * kappa)  * ((c - y[y>=a & y<=c]) / ((1 - mode) * (c - a))) ^ ((1 - mode) * kappa)
+  
+  return(res)
+}
 
 pred_cases = function(par,
                       nmonth,
@@ -27,7 +37,6 @@ pred_cases = function(par,
                       msp_st,
                       msp1_st,
                       mspmult_st,
-                      ade_dist,
                       fixedpar) {
   
   expit = function(x) {1/(1+exp(-x))}
@@ -40,18 +49,15 @@ pred_cases = function(par,
   mat_protection_decay = allpars[['mat_protection_decay']]
   baseline_hazmatprot_sn = allpars[['baseline_hazmatprot_sn']]
   baseline_hazmatprot_sp = allpars[['baseline_hazmatprot_sp']]
-  baseline_hazinfmult = allpars[['baseline_hazinfmult']]
-  baseline_hazinfmult = allpars[['baseline_hazinfmult']]
-  ageinfection_decay = allpars[['ageinfection_decay']]
+  baseline_hazmult_sn = allpars[['baseline_hazmult_sn']]
+  baseline_hazmult_sp = allpars[['baseline_hazmult_sp']]
   oneyear_probsev = allpars[['oneyear_probsev']]
-  titersev_mult = allpars[['titersev_mult']]
-  titersev_meanlog = allpars[['titersev_meanlog']]
-  titersev_sdlog = allpars[['titersev_sdlog']]
+  adepeak_logor = allpars[['adepeak_logor']]
+  ademode = allpars[['ademode']]
+  adekappa = allpars[['adekappa']]
   
   baseline_replogor = allpars[['baseline_replogor']]
-  agereporting_decay = allpars[['agereporting_decay']]
   baseline_sevlogor = allpars[['baseline_sevlogor']]
-  ageseverity_decay = allpars[['ageseverity_decay']]
   
   alphast = rep(NA,nst)
   for (i in 1:nst) {
@@ -78,31 +84,30 @@ pred_cases = function(par,
   
   Ms = 0:(nmonth-1)
   
-  hr_maternalprotection_sn = matrix(1 - baseline_hazmatprot_sn * exp(-mat_protection_decay * Ms),nrow=nst,ncol=nmonth,byrow=T)
-  hr_maternalprotection_sp = matrix(1 - baseline_hazmatprot_sp * exp(-mat_protection_decay * Ms),nrow=nst,ncol=nmonth,byrow=T)
-  hr_agefrailty = matrix(1 + baseline_hazinfmult * exp(-ageinfection_decay * Ms),nrow=nst,ncol=nmonth,byrow=T)
+  # Hazard ratio of infection in for infants born to seronegative and seropositive mothers
+  hr_sp = matrix(c(1 + baseline_hazmult_sp,1 - baseline_hazmatprot_sp * exp(-mat_protection_decay * 0:(nmonth-2))),nrow=nst,ncol=nmonth,byrow=T)
+  hr_sn = matrix(c(1 + baseline_hazmult_sn,1 - baseline_hazmatprot_sn * exp(-mat_protection_decay * 0:(nmonth-2))),nrow=nst,ncol=nmonth,byrow=T)
   
-  p_sev_sn = matrix(expit(oneyear_probsev + baseline_sevlogor * exp(-ageseverity_decay*Ms)),nrow=nst,ncol=nmonth,byrow=T)
+  # Odds of severe disease upon infection in infants born to seronegative and seropositive mothers
+  p_sev_sn = matrix(expit(oneyear_probsev + baseline_sevlogor * as.numeric(Ms==0)),nrow=nst,ncol=nmonth,byrow=T)
   
-  if (ade_dist==0) {
-    p_sev_sp = matrix(expit(oneyear_probsev + baseline_sevlogor * exp(-ageseverity_decay*Ms) + 
-                              titersev_mult * dlnorm(Ms,titersev_meanlog, titersev_sdlog)),
-                      nrow=nst,ncol=nmonth,byrow=T)
-  } else {
-    p_sev_sp = matrix(expit(oneyear_probsev + baseline_sevlogor * exp(-ageseverity_decay*Ms) + 
-                              titersev_mult * dnorm(Ms,titersev_meanlog, titersev_sdlog)),
-                      nrow=nst,ncol=nmonth,byrow=T)
-  }
+  p_sev_sp = matrix(expit(oneyear_probsev + baseline_sevlogor * as.numeric(Ms==0) + 
+                            ade_func(Ms,ademode,adekappa,adepeak_logor,1,nmonth-1)),
+                    nrow=nst,ncol=nmonth,byrow=T)
   
-  p_rep_mild = expit(logit(matrix(alphast,nrow=nst,ncol=nmonth,byrow=F)) + 
-                       matrix(baseline_replogor * exp(-agereporting_decay * Ms),nrow=nst,ncol=nmonth,byrow=T))
-  p_rep_sev = expit(logit(matrix(alphast,nrow=nst,ncol=nmonth,byrow=F)) + 
-                      matrix(baseline_replogor * exp(-agereporting_decay * Ms),nrow=nst,ncol=nmonth,byrow=T))
+  # Reporting odds
+  p_rep = expit(logit(matrix(alphast,nrow=nst,ncol=nmonth,byrow=F)) + 
+                  matrix(baseline_replogor * as.numeric(Ms==0),nrow=nst,ncol=nmonth,byrow=T))
   
   # We will need the total children born in each calendar year
   n_byyear = apply(n_st_bymonth,1,sum)
   
-  for (M in 0:(nmonth-1)) {
+  cumhaz_sn[,1] = 0
+  cumhaz_sp[,1] = 0
+  
+  denom_st_bymonth[,1] = rowSums(n_st_bymonth)
+  
+  for (M in 1:(nmonth-1)) {
     
     # Build up cumulative hazard by state-year and month of age
     cumhaz_sp[,M+1] = 0
@@ -115,7 +120,7 @@ pred_cases = function(par,
     denom_st_bymonth[,M+1] = 0
     
     # Need to calculate cumulative hazard up to age M for a child who could have experienced
-    # dengue infection at age M in year t
+    # dengue infection at age m in year t
     # For this, need to loop over children born in calendar month 12-M+1 of the previous year to 
     # calendar month 12-M of the current year
     for (c in 1:12) {
@@ -135,16 +140,17 @@ pred_cases = function(par,
       
       if (c>12-M) {
         
-        cumhaz_sn_stmcm[,c:12] = lambdaprevyear_mat[,c:12]/12 * hr_agefrailty[,1:(12-c+1)] * hr_maternalprotection_sn[,1:(12-c+1)]
-        cumhaz_sn_stmcm[,1:(M+c-12)] = lambda_mat[,1:(M+c-12)]/12 * hr_agefrailty[,(12-c+2):(M+1)] * hr_maternalprotection_sn[,(12-c+2):(M+1)]
+        cumhaz_sn_stmcm[,c:12] = lambdaprevyear_mat[,c:12]/12 * hr_sn[,1:(12-c+1)]
+        cumhaz_sn_stmcm[,1:(M+c-12)] = lambda_mat[,1:(M+c-12)]/12 * hr_sn[,(12-c+2):(M+1)]
         
-        cumhaz_sp_stmcm[,c:12] = lambdaprevyear_mat[,c:12]/12 * hr_agefrailty[,1:(12-c+1)] * hr_maternalprotection_sp[,1:(12-c+1)]
-        cumhaz_sp_stmcm[,1:(M+c-12)] = lambda_mat[,1:(M+c-12)]/12 * hr_agefrailty[,(12-c+2):(M+1)] * hr_maternalprotection_sp[,(12-c+2):(M+1)]
+        cumhaz_sp_stmcm[,c:12] = lambdaprevyear_mat[,c:12]/12 * hr_sp[,1:(12-c+1)]
+        cumhaz_sp_stmcm[,1:(M+c-12)] = lambda_mat[,1:(M+c-12)]/12 * hr_sp[,(12-c+2):(M+1)]
         
       } else {
         
-        cumhaz_sn_stmcm[,1:(M+1)] = lambda_mat[,1:(M+1)]/12 * hr_agefrailty[,1:(M+1)] * hr_maternalprotection_sn[,1:(M+1)]
-        cumhaz_sp_stmcm[,1:(M+1)] = lambda_mat[,1:(M+1)]/12 * hr_agefrailty[,1:(M+1)] * hr_maternalprotection_sp[,1:(M+1)]
+        cumhaz_sn_stmcm[,1:M] = lambda_mat[,1:M]/12 * hr_sn[,1:M]
+        
+        cumhaz_sp_stmcm[,1:M] = lambda_mat[,1:M]/12 * hr_sp[,1:M]
         
       }
       
@@ -156,21 +162,22 @@ pred_cases = function(par,
     
   }
   
-  p_inf_sp = exp(-cumhaz_sp) * (1 - exp(-lambda_mat/12 * hr_maternalprotection_sp * hr_agefrailty))
-  p_inf_sn =exp(-cumhaz_sp) * (1 - exp(-lambda_mat/12 * hr_maternalprotection_sn * hr_agefrailty))
+  p_inf_sp = exp(-cumhaz_sp) * (1 - exp(-lambda_mat/12 * hr_sp))
+  p_inf_sn = exp(-cumhaz_sn) * (1 - exp(-lambda_mat/12 * hr_sn))
   
   p_inf = msp_mat * p_inf_sp + (1 - msp_mat) * p_inf_sn
   
-  p_sev = msp_mat*p_sev_sp * p_inf_sp + (1-msp_mat)*p_sev_sn * p_inf_sn
+  p_sev = (msp_mat*p_sev_sp) * p_inf_sp + (1-msp_mat)*p_sev_sn * p_inf_sn
   
-  pred_y_st_month = denom_st_bymonth * p_inf * (p_rep_mild + p_sev * (p_rep_sev - p_rep_mild))
-  pred_sev_st_month = denom_st_bymonth * p_sev * p_rep_sev
+  pred_y_st_month = denom_st_bymonth * p_inf * p_rep
+  pred_sev_st_month = denom_st_bymonth * p_sev * p_rep
   
   log_lik_case = dpois(y_st_bymonth,pred_y_st_month,log=T)
   dim(log_lik_case)=dim(pred_y_st_month)
   
   log_lik_sev = dpois(sev_st_bymonth,pred_sev_st_month,log=T)
   dim(log_lik_sev)=dim(pred_sev_st_month)
+  
   
   return(list(pred_y_st_month,pred_sev_st_month,log_lik_case,log_lik_sev))
 }
@@ -187,7 +194,6 @@ ageprofile = function(par,
                       msp_st,
                       msp1_st,
                       mspmult_st,
-                      ade_dist,
                       fixedpar) {
   
   expit = function(x) {1/(1+exp(-x))}
@@ -200,18 +206,15 @@ ageprofile = function(par,
   mat_protection_decay = allpars[['mat_protection_decay']]
   baseline_hazmatprot_sn = allpars[['baseline_hazmatprot_sn']]
   baseline_hazmatprot_sp = allpars[['baseline_hazmatprot_sp']]
-  baseline_hazinfmult = allpars[['baseline_hazinfmult']]
-  baseline_hazinfmult = allpars[['baseline_hazinfmult']]
-  ageinfection_decay = allpars[['ageinfection_decay']]
+  baseline_hazmult_sn = allpars[['baseline_hazmult_sn']]
+  baseline_hazmult_sp = allpars[['baseline_hazmult_sp']]
   oneyear_probsev = allpars[['oneyear_probsev']]
-  titersev_mult = allpars[['titersev_mult']]
-  titersev_meanlog = allpars[['titersev_meanlog']]
-  titersev_sdlog = allpars[['titersev_sdlog']]
+  adepeak_logor = allpars[['adepeak_logor']]
+  ademode = allpars[['ademode']]
+  adekappa = allpars[['adekappa']]
   
   baseline_replogor = allpars[['baseline_replogor']]
-  agereporting_decay = allpars[['agereporting_decay']]
   baseline_sevlogor = allpars[['baseline_sevlogor']]
-  ageseverity_decay = allpars[['ageseverity_decay']]
   
   alphast = rep(NA,nst)
   for (i in 1:nst) {
@@ -238,32 +241,23 @@ ageprofile = function(par,
   
   Ms = 0:(nmonth-1)
   
-  hr_maternalprotection_sn = 1 - baseline_hazmatprot_sn * exp(-mat_protection_decay * Ms)
-  hr_maternalprotection_sp = 1 - baseline_hazmatprot_sp * exp(-mat_protection_decay * Ms)
-  hr_agefrailty = 1 + baseline_hazinfmult * exp(-ageinfection_decay * Ms)
+  hr_sn = c(1 + baseline_hazmult_sn,1 - baseline_hazmatprot_sn * exp(-mat_protection_decay * 0:(nmonth-2)))
+  hr_sp = c(1 + baseline_hazmult_sp,1 - baseline_hazmatprot_sp * exp(-mat_protection_decay * 0:(nmonth-2)))
   
-  hr_sn = hr_maternalprotection_sn * hr_agefrailty
-  hr_sp = hr_maternalprotection_sp * hr_agefrailty
+  or_rep = exp(baseline_replogor * as.numeric(Ms==0))
   
-  p_rep_mild = exp(baseline_replogor * exp(-agereporting_decay * Ms))
+  rep_sn = hr_sn * or_rep
+  rep_sp = hr_sp * or_rep
   
-  rep_sn = hr_sn * p_rep_mild
-  rep_sp = hr_sp * p_rep_mild
+  or_sev_sn = exp(baseline_sevlogor * as.numeric(Ms==0))
   
-  p_sev_sn = exp(baseline_sevlogor * exp(-ageseverity_decay*Ms))
+  or_sev_sp = exp(baseline_sevlogor * as.numeric(Ms==0) + 
+                    ade_func(Ms,ademode,adekappa,adepeak_logor,1,nmonth-1))
   
-  if (ade_dist==0) {
-    p_sev_sp = exp(baseline_sevlogor * exp(-ageseverity_decay*Ms) + 
-                              titersev_mult * dlnorm(Ms,titersev_meanlog, titersev_sdlog))
-  } else {
-    p_sev_sp = exp(baseline_sevlogor * exp(-ageseverity_decay*Ms) + 
-                              titersev_mult * dnorm(Ms,titersev_meanlog, titersev_sdlog))
-  }
+  orrepsev_sn = rep_sn * or_sev_sn
+  orrepsev_sp = rep_sp * or_sev_sp
   
-  prepsev_sn = rep_sn * p_sev_sn
-  prepsev_sp = rep_sp * p_sev_sp
-  
-  return(list(hr_sn,hr_sp,rep_sn,rep_sp,p_sev_sn,p_sev_sp,prepsev_sn,prepsev_sp))
+  return(list(hr_sn,hr_sp,rep_sn,rep_sp,or_sev_sn,or_sev_sp,orrepsev_sn,orrepsev_sp))
 }
 
 expit = function(x) {1/(1+exp(-x))}
@@ -292,39 +286,34 @@ nmonth=12
 y_st_bymonth=as.matrix(all_den[,paste0('infantcases_',0:11,'month')])
 sev_st_bymonth=as.matrix(all_den[,paste0('infantseverecases_',0:11,'month')])
 
-ade_dist = 1
 include_ade = 1
-include_sevagefrailty = 1
+include_sevagefrailty = 0
 include_infagefrailty = 1
-include_agereporting = 1
+include_agereporting = 0
 
 namepars = c("mat_protection_decay",
-   "baseline_hazmatprot_sn",
-   "baseline_hazmatprot_sp",
-   "baseline_hazinfmult",
-   "ageinfection_decay",
-   "baseline_replogor",
-   "agereporting_decay",
-   "oneyear_probsev",
-   "baseline_sevlogor",
-   "ageseverity_decay",
-   "titersev_mult",
-   "titersev_meanlog",
-   "titersev_sdlog")
+             "baseline_hazmatprot_sn",
+             "baseline_hazmatprot_sp",
+             "baseline_hazmult_sn",
+             "baseline_hazmult_sp",
+             "baseline_replogor",
+             "oneyear_probsev",
+             "baseline_sevlogor",
+             "adepeak_logor",
+             "ademode",
+             "adekappa")
 
 namepars_fortable = c("mat_protection_decay",
-            "baseline_hazmatprot_sn",
-            "baseline_hazmatprot_sp",
-            "baseline_hazinfmult",
-            "ageinfection_decay",
-            "baseline_replogor",
-            "agereporting_decay",
-            "oneyear_probsev",
-            "baseline_sevlogor",
-            "ageseverity_decay",
-            "titersev_mult",
-            "titersev_mu",
-            "titersev_sd")
+                      "onemonth_protection_sn",
+                      "onemonth_protection_sp",
+                      "neonate_hr_sn",
+                      "neonate_hr_sp",
+                      "baseline_replogor",
+                      "oneyear_probsev",
+                      "baseline_sevlogor",
+                      "adepeak_logor",
+                      "ademode",
+                      "adekappa")
 
 filesuffix = paste0('_ade_',include_ade,
           '_sevage_',include_sevagefrailty,
@@ -335,16 +324,16 @@ filesuffix = paste0('_ade_',include_ade,
           '_alphalin_',alphalin,
           '_foitype_',foi_type,
           '_lambdauncertainty_',lambda_uncertainty,
-          '_adedist_',c('LN','N')[ade_dist+1],
           filesuffix_extra)
 
-p = readRDS(paste0('./stan_fits/infantmodel',filesuffix,'.rds'))
+p = readRDS(paste0('./stan_fits/NewFOIModels/infantmodel',filesuffix,'.rds'))
 
 post_pars = as.data.frame(as.matrix(p))
 post_pars = post_pars[,c(namepars,grep('alphast_param',colnames(post_pars),value=T))]
 
 if (alphaconst==1) {
-  post_pars_forpred = cbind(post_pars[,1:14],post_pars[,rep(15:41,each=ny)])
+  post_pars_forpred = cbind(post_pars[,1:length(namepars)],
+                            post_pars[,rep((length(namepars)+1):(length(namepars)+ns),each=ny)])
   colnames(post_pars_forpred) = c(namepars,paste0('alpha',1:nst))
 } else if (alphalin==1) {
   alphaparams = post_pars[,grepl('alphast_param',colnames(post_pars))]
@@ -356,7 +345,7 @@ if (alphaconst==1) {
     }
   }
 
-  post_pars_forpred = cbind(post_pars[,1:14],allalphas)
+  post_pars_forpred = cbind(post_pars[,1:length(namepars)],allalphas)
   colnames(post_pars_forpred) = c(namepars,paste0('alpha',1:nst))
 } else {
   post_pars_forpred = post_pars
@@ -367,17 +356,38 @@ meanfitpars = apply(post_pars_forpred,2,mean)
 meancifitpars = apply(post_pars_forpred,2,function(x) quantile(x,c(0.5,0.025,0.975)))
 
 ### HR at birth for seropositive vs. seronegative infants
-rel_hr_atbirth = (1-post_pars_forpred$baseline_hazmatprot_sp)/(1-post_pars_forpred$baseline_hazmatprot_sn)
+rel_hr_atbirth = (1+post_pars_forpred$baseline_hazmult_sp)/(1+post_pars_forpred$baseline_hazmult_sn)
 quantile(rel_hr_atbirth,c(0.5,0.025,0.975))
 
+rel_hr_at1month = (1-post_pars_forpred$baseline_hazmatprot_sp)/(1-post_pars_forpred$baseline_hazmatprot_sn)
+quantile(rel_hr_at1month,c(0.5,0.025,0.975))
+
+hr_atbirth_sp = (1+post_pars_forpred$baseline_hazmult_sp)
+quantile(hr_atbirth_sp,c(0.5,0.025,0.975))
+hr_atbirth_sn = (1+post_pars_forpred$baseline_hazmult_sn)
+quantile(hr_atbirth_sn,c(0.5,0.025,0.975))
+
+hr_onemonth_sp = (1-post_pars_forpred$baseline_hazmatprot_sp)
+quantile(hr_onemonth_sp,c(0.5,0.025,0.975))
+hr_onemonth_sn = (1-post_pars_forpred$baseline_hazmatprot_sn)
+quantile(hr_onemonth_sn,c(0.5,0.025,0.975))
+
+
 meancifitpars = meancifitpars[,colnames(meancifitpars) %in% namepars]
+meancifitpars[,'baseline_hazmult_sn'] = 1 + meancifitpars[,'baseline_hazmult_sn']
+meancifitpars[,'baseline_hazmult_sp'] = 1 + meancifitpars[,'baseline_hazmult_sp']
 meancifitpars[,'baseline_hazmatprot_sn'] = 1 - meancifitpars[,'baseline_hazmatprot_sn']
 meancifitpars[,'baseline_hazmatprot_sp'] = 1 - meancifitpars[,'baseline_hazmatprot_sp']
 meancifitpars[,'baseline_replogor'] = exp(meancifitpars[,'baseline_replogor'])
 meancifitpars[,'baseline_sevlogor'] = exp(meancifitpars[,'baseline_sevlogor'])
-meancifitpars[,'oneyear_probsev'] = 100*expit(meancifitpars[,'oneyear_probsev'])
+meancifitpars[,'oneyear_probsev[1]'] = 100*expit(meancifitpars[,'oneyear_probsev[1]'])
+meancifitpars[,'oneyear_probsev[2]'] = 100*expit(meancifitpars[,'oneyear_probsev[2]'])
+meancifitpars[,'adepeak_logor'] = exp(meancifitpars[,'adepeak_logor'])
+meancifitpars[,'ademode'] = 2 + 10 * meancifitpars[,'ademode']
 partable = data.frame('Parameter'=namepars_fortable,
-                'MedianCrI'=paste0(round(meancifitpars[1,],2),' (',round(meancifitpars[2,],2),',',round(meancifitpars[3,],2),')'))
+                'MedianCrI'=paste0(sprintf('%.2f',round(meancifitpars[1,],2)),
+                                   ' (',sprintf('%.2f',round(meancifitpars[2,],2)),
+                                   ',',sprintf('%.2f',round(meancifitpars[3,],2)),')'))
 
 
 reprate_forplot = post_pars_forpred[,grepl('alpha',colnames(post_pars_forpred))]
@@ -386,10 +396,12 @@ colnames(reprate_forplot_summ) = c('Median','LCI','UCI')
 reprate_forplot_summ$State = all_den$statecode
 reprate_forplot_summ$Year = all_den$year_not
 
-reprate_forplot_summ %>% ggplot(aes(x=Year,y=Median)) + geom_line() +
-   geom_ribbon(aes(x=Year,ymin=LCI,ymax=UCI),col='grey',alpha=0.5)+
-   facet_wrap(vars(State),nrow=6,ncol=6)+
-   scale_x_continuous(breaks=c(2000,2005,2010,2015),labels=c('00','05','10','15'))+ylab('Reporting rate')+scale_y_continuous(limits=c(0,1))
+ggsave('~/UF/Research/DengueInfants/Manuscripts/Figure_S13.png',
+       reprate_forplot_summ %>% ggplot(aes(x=Year,y=Median)) + geom_line() +
+         geom_ribbon(aes(x=Year,ymin=LCI,ymax=UCI),col='grey',alpha=0.5)+
+         facet_wrap(vars(State),nrow=6,ncol=6)+
+         scale_x_continuous(breaks=c(2000,2005,2010,2015),labels=c('00','05','10','15'))+ylab('Reporting rate')+scale_y_continuous(limits=c(0,1)),
+       height=5,width=5,units='in',device='png')
 
 maternal_sp_dat = array(NA,dim=c(2014-2000+1,length(statenums),3),dimnames=list(2000:2014,
                                                                           statenums,
@@ -401,37 +413,46 @@ foi_dat = array(NA,dim=c(2014-2000+1,length(statenums)),dimnames=list(2000:2014,
 for (s in statenums) {
   
   if (file.exists(paste0(foi_dir,'S_mother/',s,'.csv'))) {
-  
-  t = read.csv(paste0(foi_dir,'S_mother/',s,'.csv'))
-  
-  t = t %>% filter(year>=2000 & year<=2014) %>% mutate(SP = Smult+S1) %>%
-    group_by(year) %>% summarise(Smult=mean(Smult),SP=mean(SP),S1=mean(S1))
-  
-  if (s == 43 & foi_dir == "./Data/02-foi/stanfit_v3/31_rta_async_sevShift_long/") {
-    t = t %>% bind_rows(data.frame('year'=2013:2014,
-                                   'Smult'=rep(t$Smult[13],2),
-                                   'SP'=rep(t$SP[13],2),
-                                   'S1'=rep(t$S1[13],2)
-    )
-    )
+    
+    t = read.csv(paste0(foi_dir,'S_mother/',s,'.csv'))
+    
+    t = t %>% filter(year>=2000 & year<=2014) %>% mutate(SP = Smult+S1) %>%
+      group_by(year) %>% dplyr::summarise(Smult=mean(Smult),SP=mean(SP),S1=mean(S1))
+    
+    if (s == 16 & foi_dir == "./Data/02-foi/stanfit_v3/t46_rta_async_noType/") {
+      t = t %>% bind_rows(data.frame('year'=2000,
+                                     'Smult'=rep(t$Smult[1],1),
+                                     'SP'=rep(t$SP[1],1),
+                                     'S1'=rep(t$S1[1],1)
+      )
+      ) %>% arrange(year)
+    }
+    
+    if (s == 43 & foi_dir == "./Data/02-foi/stanfit_v3/31_rta_async_sevShift_long/") {
+      t = t %>% bind_rows(data.frame('year'=2013:2014,
+                                     'Smult'=rep(t$Smult[13],2),
+                                     'SP'=rep(t$SP[13],2),
+                                     'S1'=rep(t$S1[13],2)
+      )
+      )
+    }
+    
+    maternal_sp_dat[,dimnames(maternal_sp_dat)[[2]]==s,c("SP")] = t$SP
+    maternal_sp_dat[,dimnames(maternal_sp_dat)[[2]]==s,c("Smult")] = t$Smult
+    maternal_sp_dat[,dimnames(maternal_sp_dat)[[2]]==s,c("S1")] = t$S1
+    
   }
   
-  maternal_sp_dat[,dimnames(maternal_sp_dat)[[2]]==s,c("SP")] = t$SP
-  maternal_sp_dat[,dimnames(maternal_sp_dat)[[2]]==s,c("Smult")] = t$Smult
-  maternal_sp_dat[,dimnames(maternal_sp_dat)[[2]]==s,c("S1")] = t$S1
-  
+  if (file.exists(paste0(foi_dir,'lambda_t/',s,'.csv'))) {
+    
+    t = read.csv(paste0(foi_dir,'lambda_t/',s,'.csv'))
+    t = t %>% filter(year>=2000 & year<=2014) %>%
+      group_by(year) %>% dplyr::summarise(FOI = mean(val))
+    
+    foi_dat[,dimnames(foi_dat)[[2]]==s] = t$FOI
+    
   }
   
-if (file.exists(paste0(foi_dir,'lambda_t/',s,'.csv'))) {
-
-  t = read.csv(paste0(foi_dir,'lambda_t/',s,'.csv'))
-  t = t %>% filter(year>=2000 & year<=2014) %>%
-    group_by(year) %>% summarise(FOI = mean(val))
-  
-  foi_dat[,dimnames(foi_dat)[[2]]==s] = t$FOI
-  
-  }
-
 }
 
 all_den$maternal_sp = sapply(1:nrow(all_den),function(x) (maternal_sp_dat[dimnames(maternal_sp_dat)[[1]]==all_den$year_not[x],
@@ -454,20 +475,19 @@ msp_st = msp1_st+mspmult_st
 n_st_bymonth = as.matrix(all_den[,paste0('infantbirths_',1:12,'month')])
 
 pred = apply(post_pars_forpred,1,function(x)
-pred_cases(x,
-       nmonth,
-       nst,
-       ns,
-       ny,
-       y_st_bymonth,
-       n_st_bymonth,
-       sev_st_bymonth,
-       lambda_st,
-       msp_st,
-       msp1_st,
-       mspmult_st,
-       ade_dist,
-       c())
+  pred_cases(x,
+             nmonth,
+             nst,
+             ns,
+             ny,
+             y_st_bymonth,
+             n_st_bymonth,
+             sev_st_bymonth,
+             lambda_st,
+             msp_st,
+             msp1_st,
+             mspmult_st,
+             c())
 )
 
 mean_matrix_predictedcases = Reduce("+", lapply(pred,function(x) x[[1]]))/ length(pred)
@@ -566,7 +586,8 @@ pred_vs_obs_sevcases_brazil_5year = pred_vs_obs_sevcases_byiter %>%
   group_by(y5_label,Month,iter) %>% summarise(Observed=sum(Observed),
                                               Fit=sum(Pred))
 
-ggplot() + 
+ggsave('~/UF/Research/DengueInfants/Manuscripts/Figure_S16.png',
+       ggplot() + 
          geom_ribbon(data=pred_vs_obs_sevcases_brazil_5year %>% 
                        group_by(y5_label,Month) %>% 
                        summarise(Observed=mean(Observed),
@@ -584,19 +605,8 @@ ggplot() +
          facet_wrap(vars(y5_label)) +
          scale_x_continuous(name='Age',breaks=c(0,6,12))+
          ylab('Count')+
-         scale_linetype_manual(name='',values=c(1,2),labels=c('Fit','Observed'))
-
-
-pred_vs_obs_cases_brazil_5year %>% 
-  pivot_longer(cols = 'Observed':'Fit') %>% ggplot() + #geom_point(aes(x=Month,y=value,shape=name)) + 
-  geom_line(aes(x=Month,y=value,linetype=name)) + 
-  facet_wrap(vars(y5_label))
-
-pred_vs_obs_sevcases_brazil_5year %>% 
-  pivot_longer(cols = 'Observed':'Fit') %>% ggplot() + #geom_point(aes(x=Month,y=value,shape=name)) + 
-  geom_line(aes(x=Month,y=value,linetype=name)) + 
-  facet_wrap(vars(y5_label))
-
+         scale_linetype_manual(name='',values=c(1,2),labels=c('Fit','Observed')),
+       height=2,width=6,units='in',device='png')
 
 # Predicted and observed proportion of cases among neonates
 predprop_byregion_5year = pred_vs_obs_cases_byregion_5year %>% 
@@ -606,12 +616,20 @@ predprop_byregion_5year = pred_vs_obs_cases_byregion_5year %>%
   summarise(PropObs=sum(ObsCase/sum(Observed)),
             PropPred=sum(PredCase)/sum(Fit))
 
+predsevprop_byregion_5year = pred_vs_obs_sevcases_byregion_5year %>% 
+  mutate(PredCase=Fit*as.numeric(Month>=5),
+         ObsCase=Observed*as.numeric(Month>=5)) %>% 
+  group_by(region,y5_label) %>% 
+  summarise(PropObs=sum(ObsCase/sum(Observed)),
+            PropPred=sum(PredCase)/sum(Fit))
+
+
 allpredprop_byregion_5year = 
   bind_rows(predprop_byregion_5year %>% mutate(Case = "All cases"),
             predsevprop_byregion_5year %>% mutate(Case = "Severe cases"))
 
-
-allpredprop_byregion_5year %>% 
+ggsave('~/UF/Research/DengueInfants/Manuscripts/Figure_S10.png',
+       allpredprop_byregion_5year %>% 
          pivot_longer(cols = 'PropObs':'PropPred') %>% 
          mutate(y5 = case_when(y5_label == '2000-2004' ~ 1,
                                y5_label == '2005-2009' ~ 2,
@@ -627,7 +645,8 @@ allpredprop_byregion_5year %>%
          ylab('Proportion') + 
          scale_x_continuous(name='Year',breaks=seq(1:3),labels=c('00-04','05-09','10-14'))+
          theme(legend.position='right',
-               axis.text = element_text(size=6))
+               axis.text = element_text(size=6)),
+       height=5,width=5,units='in',device='png')
 
 
 predcase_age_dist = matrix(unlist(lapply(pred,function(x) colSums(x[[1]]))),nrow=length(pred),ncol=12,byrow=T)
@@ -650,8 +669,7 @@ state_indices = matrix(1:405,nrow=ns,ncol=ny,byrow=T)
 predcase_age_dist_bystate = lapply(pred,function(p) t(sapply(1:ns,function(x) colSums(p[[1]][state_indices[x,],]))))
 
 predy_bystate_total = data.frame('Month' = rep(1:12,ns))
-predy_bystate_total$State = paste0(rep(unique(all_den$state),each=12),"-",
-                             rep(unique(all_den$statecode),each=12))
+predy_bystate_total$State = rep(unique(all_den$statecode),each=12)
 trow = 1
 for (s in 1:ns) {
 
@@ -673,27 +691,27 @@ sapply(unique(all_den$state),
 'LCI'=NA,
 'UCI'=NA,
 'Month'=rep(1:12,ns),
-'State'=paste0(rep(unique(all_den$state),each=12),"-",
-           rep(unique(all_den$statecode),each=12)),
+'State'=rep(unique(all_den$statecode),each=12),
 'Group'='Observed')
 predy_bystate_total = bind_rows(predy_bystate_total,obsy_bystate_total)
 
-ggplot(predy_bystate_total) + geom_line(aes(x=Month,y=Median,linetype=Group)) +
-  geom_ribbon(aes(x=Month,ymin=LCI,ymax=UCI,fill=Group),show.legend=F,alpha=0.5)+
-  ylim(c(0,max(c(predy_bystate_total$Median,predy_bystate_total$UCI),na.rm=T)))+
-  ylab('Reported cases')+
-  facet_wrap(vars(State),nrow=5,ncol=6)+
-  scale_x_continuous(breaks=seq(0,12,3))+
-  scale_linetype_manual(name='',values=c(1,2),labels=c('Fit','Observed'))+
-  scale_fill_manual(name='',values=c('grey','grey'),labels=c('Fit','Observed'))+
-  theme(legend.position=c(0.9,0.1))
+ggsave('~/UF/Research/DengueInfants/Manuscripts/Figure_S14.png',
+  ggplot(predy_bystate_total) + geom_line(aes(x=Month,y=Median,linetype=Group)) +
+    geom_ribbon(aes(x=Month,ymin=LCI,ymax=UCI,fill=Group),show.legend=F,alpha=0.5)+
+    ylim(c(0,max(c(predy_bystate_total$Median,predy_bystate_total$UCI),na.rm=T)))+
+    ylab('Reported cases')+
+    facet_wrap(vars(State),nrow=5,ncol=6)+
+    scale_x_continuous(breaks=seq(0,12,3))+
+    scale_linetype_manual(name='',values=c(1,2),labels=c('Fit','Observed'))+
+    scale_fill_manual(name='',values=c('grey','grey'),labels=c('Fit','Observed'))+
+    theme(legend.position=c(0.9,0.1)),
+  height=6,width=6,units='in',device='png')
 
 ## Severe cases
 predsev_age_dist_bystate = lapply(pred,function(p) t(sapply(1:ns,function(x) colSums(p[[2]][state_indices[x,],]))))
 
 predsev_bystate_total = data.frame('Month' = rep(1:12,ns))
-predsev_bystate_total$State = paste0(rep(unique(all_den$state),each=12),"-",
-                               rep(unique(all_den$statecode),each=12))
+predsev_bystate_total$State = rep(unique(all_den$statecode),each=12)
 trow = 1
 for (s in 1:ns) {
 
@@ -715,20 +733,21 @@ obssev_bystate_total = data.frame('Median'=c(t(sapply(0:11,function(x)
   'LCI'=NA,
   'UCI'=NA,
   'Month'=rep(1:12,ns),
-  'State'=paste0(rep(unique(all_den$state),each=12),"-",
-             rep(unique(all_den$statecode),each=12)),
+  'State'=rep(unique(all_den$statecode),each=12),
   'Group'='Observed')
 predsev_bystate_total = bind_rows(predsev_bystate_total,obssev_bystate_total)
 
-ggplot(predsev_bystate_total) + geom_line(aes(x=Month,y=Median,linetype=Group)) +
-  geom_ribbon(aes(x=Month,ymin=LCI,ymax=UCI,fill=Group),show.legend=F,alpha=0.5)+
-  ylim(c(0,max(c(predsev_bystate_total$Median,predsev_bystate_total$UCI),na.rm=T)))+
-  ylab('Reported severe cases')+
-  facet_wrap(vars(State),nrow=5,ncol=6)+
-  scale_x_continuous(breaks=seq(0,12,3))+
-  scale_linetype_manual(name='',values=c(1,2),labels=c('Fit','Observed'))+
-  scale_fill_manual(name='',values=c('grey','grey'),labels=c('Fit','Observed'))+
-  theme(legend.position=c(0.9,0.1))
+ggsave('~/UF/Research/DengueInfants/Manuscripts/Figure_S15.png',
+  ggplot(predsev_bystate_total) + geom_line(aes(x=Month,y=Median,linetype=Group)) +
+    geom_ribbon(aes(x=Month,ymin=LCI,ymax=UCI,fill=Group),show.legend=F,alpha=0.5)+
+    ylim(c(0,max(c(predsev_bystate_total$Median,predsev_bystate_total$UCI),na.rm=T)))+
+    ylab('Reported severe cases')+
+    facet_wrap(vars(State),nrow=5,ncol=6)+
+    scale_x_continuous(breaks=seq(0,12,3))+
+    scale_linetype_manual(name='',values=c(1,2),labels=c('Fit','Observed'))+
+    scale_fill_manual(name='',values=c('grey','grey'),labels=c('Fit','Observed'))+
+    theme(legend.position=c(0.9,0.1)),
+  height=6,width=6,units='in',device='png')
 
 profiles = apply(post_pars_forpred,1,function(x)
   ageprofile(x,
@@ -743,7 +762,6 @@ profiles = apply(post_pars_forpred,1,function(x)
              msp_st,
              msp1_st,
              mspmult_st,
-             ade_dist,
              c())
 )
 
@@ -751,10 +769,10 @@ hr_sn = matrix(unlist(lapply(profiles,function(x) x[[1]])),nrow=length(profiles)
 hr_sp = matrix(unlist(lapply(profiles,function(x) x[[2]])),nrow=length(profiles),ncol=12,byrow=T)
 rep_sn = matrix(unlist(lapply(profiles,function(x) x[[3]])),nrow=length(profiles),ncol=12,byrow=T)
 rep_sp = matrix(unlist(lapply(profiles,function(x) x[[4]])),nrow=length(profiles),ncol=12,byrow=T)
-p_sev_sn = matrix(unlist(lapply(profiles,function(x) x[[5]])),nrow=length(profiles),ncol=12,byrow=T)
-p_sev_sp = matrix(unlist(lapply(profiles,function(x) x[[6]])),nrow=length(profiles),ncol=12,byrow=T)
-prepsev_sn = matrix(unlist(lapply(profiles,function(x) x[[7]])),nrow=length(profiles),ncol=12,byrow=T)
-prepsev_sm = matrix(unlist(lapply(profiles,function(x) x[[8]])),nrow=length(profiles),ncol=12,byrow=T)
+or_sev_sn = matrix(unlist(lapply(profiles,function(x) x[[5]])),nrow=length(profiles),ncol=12,byrow=T)
+or_sev_sp = matrix(unlist(lapply(profiles,function(x) x[[6]])),nrow=length(profiles),ncol=12,byrow=T)
+orrepsev_sn = matrix(unlist(lapply(profiles,function(x) x[[7]])),nrow=length(profiles),ncol=12,byrow=T)
+orrepsev_sp = matrix(unlist(lapply(profiles,function(x) x[[8]])),nrow=length(profiles),ncol=12,byrow=T)
 
 data_forplot = data.frame('Month'=rep(1:12,times=8),
                           'EventType'=c(rep('Infection (HR)',24),
@@ -767,26 +785,26 @@ data_forplot = data.frame('Month'=rep(1:12,times=8),
                                    apply(hr_sp,2,mean),
                                    apply(rep_sn,2,mean),
                                    apply(rep_sp,2,mean),
-                                   apply(p_sev_sn,2,mean),
-                                   apply(p_sev_sp,2,mean),
-                                   apply(prepsev_sn,2,mean),
-                                   apply(prepsev_sm,2,mean)),
+                                   apply(or_sev_sn,2,mean),
+                                   apply(or_sev_sp,2,mean),
+                                   apply(orrepsev_sn,2,mean),
+                                   apply(orrepsev_sp,2,mean)),
                           'LCI'=c(apply(hr_sn,2,function(x) quantile(x,0.025)),
                                   apply(hr_sp,2,function(x) quantile(x,0.025)),
                                   apply(rep_sn,2,function(x) quantile(x,0.025)),
                                   apply(rep_sp,2,function(x) quantile(x,0.025)),
-                                  apply(p_sev_sn,2,function(x) quantile(x,0.025)),
-                                  apply(p_sev_sp,2,function(x) quantile(x,0.025)),
-                                  apply(prepsev_sn,2,function(x) quantile(x,0.025)),
-                                  apply(prepsev_sm,2,function(x) quantile(x,0.025))),
+                                  apply(or_sev_sn,2,function(x) quantile(x,0.025)),
+                                  apply(or_sev_sp,2,function(x) quantile(x,0.025)),
+                                  apply(orrepsev_sn,2,function(x) quantile(x,0.025)),
+                                  apply(orrepsev_sp,2,function(x) quantile(x,0.025))),
                           'UCI'=c(apply(hr_sn,2,function(x) quantile(x,0.975)),
                                   apply(hr_sp,2,function(x) quantile(x,0.975)),
                                   apply(rep_sn,2,function(x) quantile(x,0.975)),
                                   apply(rep_sp,2,function(x) quantile(x,0.975)),
-                                  apply(p_sev_sn,2,function(x) quantile(x,0.975)),
-                                  apply(p_sev_sp,2,function(x) quantile(x,0.975)),
-                                  apply(prepsev_sn,2,function(x) quantile(x,0.975)),
-                                  apply(prepsev_sm,2,function(x) quantile(x,0.975)))
+                                  apply(or_sev_sn,2,function(x) quantile(x,0.975)),
+                                  apply(or_sev_sp,2,function(x) quantile(x,0.975)),
+                                  apply(orrepsev_sn,2,function(x) quantile(x,0.975)),
+                                  apply(orrepsev_sp,2,function(x) quantile(x,0.975)))
 )
 data_forplot$EventType = factor(data_forplot$EventType,levels=c('Infection (HR)',
                                                                 'Severe Disease (OR)',
@@ -882,7 +900,9 @@ profileplot = ggplot() +
         legend.text = element_text(size=textsize),
         axis.title = element_text(size=textsize),
         axis.text = element_text(size=textsize))
-profileplot
+ggsave('~/UF/Research/DengueInfants/Manuscripts/Figure_S12.png',
+  profileplot,
+  height=5,width=5,units='in',device='png')
 
 predcase_age_dist = matrix(unlist(lapply(pred,function(x) colSums(x[[1]]))),nrow=length(pred),ncol=12,byrow=T)
 predsev_age_dist = matrix(unlist(lapply(pred,function(x) colSums(x[[2]]))),nrow=length(pred),ncol=12,byrow=T)
@@ -900,7 +920,7 @@ data_forplot = data.frame('Month'=rep(1:12,times=6),
 
 predplot = ggplot() +
   geom_ribbon(data=data_forplot %>% filter(is.na(Mean)),aes(x=Month,ymin=LCI,ymax=UCI),alpha=0.2,fill='grey',col=NA)+
-  geom_line(data=data_forplot %>% filter(!is.na(Mean)),aes(x=as.numeric(Month),y=Mean,linetype=Type)) +
+  geom_line(data=data_forplot %>% filter(!is.na(Mean)),aes(x=as.numeric(Month),y=Mean,linetype=Type),linewidth=0.25) +
   scale_x_continuous(name='Month',breaks=c(0,3,6,9,12))+
   ylab('Cases')+
   scale_linetype_manual(name=NULL,values=c(1,2)) + 
@@ -915,4 +935,6 @@ predplot = ggplot() +
         legend.text = element_text(size=textsize),
         axis.title = element_text(size=textsize),
         axis.text = element_text(size=textsize))
-predplot
+ggsave('~/UF/Research/DengueInfants/Manuscripts/Figure_S11.png',
+  predplot,
+  height=2,width=4,units='in',device='png')

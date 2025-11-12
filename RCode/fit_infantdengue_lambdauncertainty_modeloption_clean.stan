@@ -6,12 +6,16 @@ functions {
     return 1/(1+exp(-x));
   }
   
+  real ade_func(real y, real mode, real kappa, real logOR, real a, real c) {
+
+    return(logOR * ((y - a) / (mode * (c - a))) ^ (mode * kappa)  * ((c - y) / ((1 - mode) * (c - a))) ^ ((1 - mode) * kappa));
+  }
+    
   real bvnormmix(real x, real lambda1, real lambda2, real mu1, real mu2, real sigma1, real sigma2) {
     
     return log(lambda1 * exp(normal_lpdf(x | mu1, sigma1)) + lambda2 * exp(normal_lpdf(x | mu2, sigma2)));
     
   }
-  
 }
 
 data {
@@ -35,7 +39,6 @@ data {
   int<lower=0,upper=1> include_infagefrailty; //Whether or not to include increasing risk of infection with younger age
   int<lower=0,upper=1> include_agereporting; //Whether or not to include increasing risk of reporting with younger age
   int<lower=0,upper=1> include_maternalprotection; //Whether or not to include maternal protection against infection
-  int<lower=0,upper=1> ade_dist; // Distribution for ADE odds ratio (0=log-normal, 1=normal)
 }
 
 parameters {
@@ -44,28 +47,32 @@ parameters {
   real<lower=lambda_prior_lbounds,upper=lambda_prior_ubounds> lambda_st[nst]; // Dengue FOI in each state-year
   real<lower=msp_prior_lbounds,upper=msp_prior_ubounds> msp_st[nst]; // Maternal monotypic seroprevalence in each state-year
   
-  // Maternal protection against infection
-  real<lower=0,upper=8> mat_protection_decay_param[include_maternalprotection ? 1:0];
+  // Profile of infant risk among those born to seronegative and seropositive mothers
+  // For both groups, we estimate the hazard ratio in month 0 and month 1, and from month
+  // two onwards the hazard ratio decays towards 1 at an exponential rate
+  real<lower=0.1,upper=1> mat_protection_decay_param[include_maternalprotection ? 1:0];
+  
+  // Decreased risk in infants 1 month vs. general population
   real<lower=0,upper=1> baseline_hazmatprot_sp_param[include_maternalprotection ? 1:0];
-  real<upper=1> baseline_hazmatprot_sn_param[include_maternalprotection ? 1:0];
+  real<lower=0,upper=1> baseline_hazmatprot_sn_param[include_maternalprotection ? 1:0];
   
-  // Decaying risk of infection with age
-  real<lower=0> baseline_hazinfmult_param[include_infagefrailty ? 1:0];
-  real<lower=0,upper=8> ageinfection_decay_param[include_infagefrailty ? 1:0];
+  // Increase risk in neonate vs. general population
+  real<lower=0> baseline_hazmult_sp_param[include_infagefrailty ? 1:0];
+  real<lower=0> baseline_hazmult_sn_param[include_infagefrailty ? 1:0];
   
-  // Decaying risk of reporting with age
+  // Increased odds of reporting in neonates
   real<lower=0,upper=5> baseline_replogor_param[include_agereporting ? 1:0];
-  real<lower=0,upper=8> agereporting_decay_param[include_agereporting ? 1:0];
   
-  // Changing risk of severe infection by age - elevated at birth and exponential decrease
-  real<lower=0,upper=8> ageseverity_decay_param[include_sevagefrailty ? 1:0];
+  // Changing risk of severe infection in nenoates
   real<lower=-3,upper=3> baseline_sevlogor_param[include_sevagefrailty ? 1:0];
+  
+  // Log odds of severe disease in a one-year old
   real<lower=-10,upper=0> oneyear_probsev;
   
-  // Elevated risk of severe infection in children born to seropositive mothers - lognormal
-  real<lower=0,upper=30> titersev_mult_param[include_ade ? 1:0];
-  real<lower=0,upper=12> titersev_meanlog_param[include_ade ? 1:0];
-  real<lower=0,upper=3> titersev_sdlog_param[include_ade ? 1:0];
+  // Elevated risk of severe infection in children born to seropositive mothers - has the shape of a beta distribution, with a mode, peak and "concentration"
+  real<lower=0,upper=3> adepeak_logor_param[include_ade ? 1:0];
+  real<lower=0,upper=1> ademode_param[include_ade ? 1:0];
+  real<lower=0,upper=10> adekappa_param[include_ade ? 1:0];
   
 }
 
@@ -73,18 +80,16 @@ transformed parameters {
   
   // Maternal protection against infection
   real<lower=0,upper=1> alphast[nst];
-  real<lower=0,upper=8> mat_protection_decay;
+  real<lower=0.1,upper=1> mat_protection_decay;
   real<lower=0,upper=1> baseline_hazmatprot_sp;
   real<upper=1> baseline_hazmatprot_sn;
-  real<lower=0> baseline_hazinfmult;
-  real<lower=0,upper=8> ageinfection_decay;
+  real<lower=0> baseline_hazmult_sp;
+  real<lower=0> baseline_hazmult_sn;
   real<lower=0,upper=5> baseline_replogor;
-  real<lower=0,upper=8> agereporting_decay;
   real<lower=-3,upper=3> baseline_sevlogor;
-  real<lower=0,upper=8> ageseverity_decay;
-  real<lower=0,upper=30> titersev_mult;
-  real<lower=0,upper=12> titersev_meanlog;
-  real<lower=0,upper=3> titersev_sdlog;
+  real<lower=0,upper=3> adepeak_logor;
+  real<lower=0,upper=1> ademode;
+  real<lower=0,upper=10> adekappa;
   
   if (alpha_constant_t) {
     for (t in 1:ny) {
@@ -114,56 +119,51 @@ transformed parameters {
   }
   
   if (include_infagefrailty) {
-    baseline_hazinfmult = baseline_hazinfmult_param[1];
-    ageinfection_decay = ageinfection_decay_param[1];
+    baseline_hazmult_sp = baseline_hazmult_sp_param[1];
+    baseline_hazmult_sn = baseline_hazmult_sn_param[1];
   } else {
-    baseline_hazinfmult = 0;
-    ageinfection_decay = 1;
+    baseline_hazmult_sp = 0;
+    baseline_hazmult_sn = 0;
   }
   
   if (include_agereporting) {
     baseline_replogor = baseline_replogor_param[1];
-    agereporting_decay = agereporting_decay_param[1];
   } else {
     baseline_replogor = 0;
-    agereporting_decay = 1;
   }
   
   if (include_sevagefrailty) {
     baseline_sevlogor = baseline_sevlogor_param[1];
-    ageseverity_decay = ageseverity_decay_param[1];
   } else {
     baseline_sevlogor = 0;
-    ageseverity_decay = 1;
   }
   
   if (include_ade) {
-    titersev_mult = titersev_mult_param[1];
-    titersev_meanlog = titersev_meanlog_param[1];
-    titersev_sdlog = titersev_sdlog_param[1];
+    adepeak_logor = adepeak_logor_param[1];
+    ademode = ademode_param[1];
+    adekappa = adekappa_param[1];
+    
   } else {
-    titersev_mult = 0;
-    titersev_meanlog = log(100);
-    titersev_sdlog = 0.1;
+    adepeak_logor = 0;
+    ademode = 0.5;
+    adekappa = 2;
   }
   
 }
 
 model {
   
-  real hr_maternalprotection_sp[nmonth];
-  real hr_maternalprotection_sn[nmonth];
-  real hr_agefrailty[nmonth];
+  real hr_sp[nmonth];
+  real hr_sn[nmonth];
   real cumhaz_sp;
   real cumhaz_sn;
   real p_inf_sp;
   real p_inf_sn;
-  real p_sev_sn[nmonth];
   real p_sev_sp[nmonth];
+  real p_sev_sn[nmonth];
   real p_sev;
   real p_inf;
-  real p_rep_mild;
-  real p_rep_sev;
+  real p_rep;
   
   // Need to keep track of the children that are at risk of having a case at age 0 in calendar year t
   real denom_st_bymonth;
@@ -173,26 +173,34 @@ model {
   real cumhaz_sn_stmc;
   real cumhaz_sp_stmc;
   
-  // Priors
+    // Priors
   for (st in 1:nst) {
     target += bvnormmix(lambda_st[st],lambda_prior[st,1],lambda_prior[st,2],lambda_prior[st,3],lambda_prior[st,4],lambda_prior[st,5],lambda_prior[st,6]) ; 
     target += bvnormmix(msp_st[st],msp_prior[st,1],msp_prior[st,2],msp_prior[st,3],msp_prior[st,4],msp_prior[st,5],msp_prior[st,6]) ; 
   }
-  
+
   for (M in 0:(nmonth-1)) {
     
-    hr_maternalprotection_sp[M+1] = 1 - baseline_hazmatprot_sp * exp(-mat_protection_decay * M);
-    hr_maternalprotection_sn[M+1] = 1 - baseline_hazmatprot_sn * exp(-mat_protection_decay * M);
-    hr_agefrailty[M+1] = 1 + baseline_hazinfmult * exp(-ageinfection_decay * M);
+    if (M==0) {
     
-    p_sev_sn[M+1] = expit(oneyear_probsev + baseline_sevlogor * exp(-ageseverity_decay*M));
+      hr_sp[M+1] = (1 + baseline_hazmult_sp);
+      hr_sn[M+1] = (1 + baseline_hazmult_sn);
       
-    // probability of severe disease by month
-    if (ade_dist==0) {
-      p_sev_sp[M+1] = expit(oneyear_probsev + baseline_sevlogor * exp(-ageseverity_decay*M) + titersev_mult * exp(lognormal_lpdf(M | titersev_meanlog, titersev_sdlog)));
+      // probability of severe disease by month
+      p_sev_sn[M+1] = expit(oneyear_probsev + baseline_sevlogor);
+      p_sev_sp[M+1] = expit(oneyear_probsev + baseline_sevlogor);
+      
     } else {
-      p_sev_sp[M+1] = expit(oneyear_probsev + baseline_sevlogor * exp(-ageseverity_decay*M) + titersev_mult * exp(normal_lpdf(M | titersev_meanlog, titersev_sdlog)));
+      
+      hr_sp[M+1] = (1 - baseline_hazmatprot_sp * exp(-mat_protection_decay * (M-1)));
+      hr_sn[M+1] = (1 - baseline_hazmatprot_sn * exp(-mat_protection_decay * (M-1)));
+      
+      // probability of severe disease by month
+      p_sev_sn[M+1] = expit(oneyear_probsev);
+      p_sev_sp[M+1] = expit(oneyear_probsev + ade_func(M,ademode,adekappa,adepeak_logor,1,nmonth-1));
+      
     }
+
   }
   
   for (st in 1:nst) {
@@ -207,8 +215,8 @@ model {
     for (M in 0:(nmonth-1)) {
 
       // Build up cumulative hazard by state-year and month of age
-      cumhaz_sp = 0;
       cumhaz_sn = 0;
+      cumhaz_sp = 0;
       
       // Need to calculate cumulative hazard up to age M for a child who could have experienced
       // dengue infection at age M in year t
@@ -222,7 +230,7 @@ model {
         // of a child's life were experienced in the previous year
         if (c > 12-M) {
         
-          for (m in 0:M) {
+          for (m in 0:(M-1)) {
           
             // If their being m months old occurred in the previous calendar year (i.e. if m<=12-c) use last year's
             // population FOI
@@ -231,22 +239,22 @@ model {
               // Special case as I don't have FOI from 1999, so just 2000
               if ((st-1) % ny ==0) {
                 
-                cumhaz_sn_stmc += lambda_st[st]/12 * hr_agefrailty[m+1] * hr_maternalprotection_sn[m+1];
-                cumhaz_sp_stmc += lambda_st[st]/12 * hr_agefrailty[m+1] * hr_maternalprotection_sp[m+1];
+                cumhaz_sn_stmc += lambda_st[st]/12 * hr_sn[m+1];
+                cumhaz_sp_stmc += lambda_st[st]/12 * hr_sp[m+1];
                 
               } else {
                 
                 // Data is ordered by state first, then by year, so st-1 is the index of the same state's previous year
-                cumhaz_sn_stmc += lambda_st[st-1]/12 * hr_agefrailty[m+1] * hr_maternalprotection_sn[m+1];
-                cumhaz_sp_stmc += lambda_st[st-1]/12 * hr_agefrailty[m+1] * hr_maternalprotection_sp[m+1];
+                cumhaz_sn_stmc += lambda_st[st-1]/12 * hr_sn[m+1];
+                cumhaz_sp_stmc += lambda_st[st-1]/12 * hr_sp[m+1];
                 
               }
               
             } else {
               // If their being m months old occurred in the same calendar year (i.e. if m>12-c) use this year's population FOI
               
-              cumhaz_sn_stmc += lambda_st[st]/12 * hr_agefrailty[m+1] * hr_maternalprotection_sn[m+1];
-              cumhaz_sp_stmc += lambda_st[st]/12 * hr_agefrailty[m+1] * hr_maternalprotection_sp[m+1];
+              cumhaz_sn_stmc += lambda_st[st]/12 * hr_sn[m+1];
+              cumhaz_sp_stmc += lambda_st[st]/12 * hr_sp[m+1];
               
             }
           
@@ -254,10 +262,10 @@ model {
           
         } else {
           
-          for (m in 0:M) {
+          for (m in 0:(M-1)) {
             
-            cumhaz_sn_stmc += lambda_st[st]/12 * hr_agefrailty[m+1] * hr_maternalprotection_sn[m+1];
-            cumhaz_sp_stmc += lambda_st[st]/12 * hr_agefrailty[m+1] * hr_maternalprotection_sp[m+1];
+            cumhaz_sn_stmc += lambda_st[st]/12 * hr_sn[m+1];
+            cumhaz_sp_stmc += lambda_st[st]/12 * hr_sp[m+1];
             
           }
           
@@ -269,16 +277,18 @@ model {
         
       }
       
-      p_inf_sp = exp(-cumhaz_sp) * (1 - exp(-lambda_st[st]/12 * hr_maternalprotection_sp[M+1] * hr_agefrailty[M+1]));
-      p_inf_sn = exp(-cumhaz_sn) * (1 - exp(-lambda_st[st]/12 * hr_maternalprotection_sn[M+1] * hr_agefrailty[M+1]));
+      p_inf_sn = exp(-cumhaz_sn) * (1 - exp(-lambda_st[st]/12 * hr_sn[M+1]));
+      p_inf_sp = exp(-cumhaz_sp) * (1 - exp(-lambda_st[st]/12 * hr_sp[M+1]));
         
       p_inf = msp_st[st] * p_inf_sp + (1 - msp_st[st]) * p_inf_sn;
       
-      p_rep_mild = expit(logit(alphast[st]) + baseline_replogor * exp(-agereporting_decay * M));
+      if (M==0) {
+        p_rep = expit(logit(alphast[st]) + baseline_replogor);
+      } else {
+        p_rep = expit(logit(alphast[st]));
+      }
       
       p_sev = (msp_st[st]*p_sev_sp[M+1]) * p_inf_sp + (1-msp_st[st])*p_sev_sn[M+1] * p_inf_sn;
-      
-      p_rep_sev = expit(logit(alphast[st]) + baseline_replogor * exp(-agereporting_decay * M));
       
       // Need to calculate the denominator (who is at risk of having case at age M in year t)
       // For this, we add up all children who could have been M months old during year t
@@ -310,11 +320,12 @@ model {
         
       }
       
-      y_st_bymonth[st,M+1] ~ poisson(denom_st_bymonth * p_inf * (p_rep_mild + p_sev * (p_rep_sev - p_rep_mild)));
-      sev_st_bymonth[st,M+1] ~ poisson(denom_st_bymonth * p_sev * p_rep_sev);
-          
+      y_st_bymonth[st,M+1] ~ poisson(denom_st_bymonth * p_inf * p_rep);
+      sev_st_bymonth[st,M+1] ~ poisson(denom_st_bymonth * p_sev * p_rep);
+        
     }
-      
-  }
     
+  }
+  
 }
+
